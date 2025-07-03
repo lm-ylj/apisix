@@ -35,6 +35,18 @@ local schema = {
         idp_uri = {type = "string"},
         cas_callback_uri = {type = "string"},
         logout_uri = {type = "string"},
+        user_header = {type = "string"},
+        allow_uri_prefix = {
+            type = "array",
+            description = "set request address prefixes that allow direct access",
+            items = {
+                type = "string",
+                minLength = 1,
+                maxLength = 4096
+            },
+            minItems = 1,
+            uniqueItems = true
+        }
     },
     required = {
         "idp_uri", "cas_callback_uri", "logout_uri"
@@ -87,6 +99,9 @@ local function with_session_id(conf, ctx, session_id)
     else
         -- refresh the TTL
         store:set(session_id, user, SESSION_LIFETIME)
+        if conf.user_header then
+            core.request.set_header(conf.user_header, user)
+        end
     end
 end
 
@@ -165,6 +180,15 @@ function _M.access(conf, ctx)
     local method = core.request.get_method()
     local uri = ctx.var.uri
 
+    if conf.allow_uri_prefix ~= nil then
+        for _, prefix in ipairs(conf.allow_uri_prefix) do
+            if uri:sub(1, #prefix) == prefix then
+                core.log.info("Request to ", uri, " allowed by prefix: ", prefix)
+                return
+            end
+        end
+    end
+
     if method == "GET" and uri == conf.logout_uri then
         return logout(conf, ctx)
     end
@@ -185,11 +209,14 @@ function _M.access(conf, ctx)
         end
     else
         local session_id = get_session_id(ctx)
+        local ticket = ctx.var.arg_ticket
         if session_id ~= nil then
+            if ticket ~= nil and uri == conf.cas_callback_uri then
+                return validate_with_cas(conf, ctx, ticket)
+            end
             return with_session_id(conf, ctx, session_id)
         end
 
-        local ticket = ctx.var.arg_ticket
         if ticket ~= nil and uri == conf.cas_callback_uri then
             return validate_with_cas(conf, ctx, ticket)
         else
